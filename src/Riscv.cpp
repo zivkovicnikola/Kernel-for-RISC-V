@@ -9,9 +9,7 @@
 #include "../h/Print.hpp"
 
 void Riscv::popSppSpie() {
-//    if (TCB::running->body == MyConsole::wrapper)
-//        __asm__ volatile ("csrs sstatus, %0" : : "r"(SSTATUS_SPP));
-//    else
+
     __asm__ volatile ("csrc sstatus, %0" : : "r"(SSTATUS_SPP));
 
     __asm__ volatile ("csrw sepc, ra");
