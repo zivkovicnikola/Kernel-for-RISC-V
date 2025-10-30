@@ -1,0 +1,697 @@
+#include "../h/syscall_cpp.hpp"
+#include "../h/syscall_c.h"
+#include "printing.hpp"
+#ifndef HISTOGRAM_TEST
+#define HISTOGRAM_TEST
+
+// Globalne promenljive
+int *H;
+// globalni histogram
+Semaphore *histLock;
+// zaštita pristupa histogramu
+Semaphore *doneSem;
+// čekanje da sve niti završe
+int M, N;  // dimenzije matrice
+int **mat; // sama matrica
+
+// Radna nit za jednu vrstu
+class Worker : public Thread {
+    int* row;
+    int cols;
+    int id;
+
+public:
+    Worker(int* row, int cols, int id) : Thread(), row(row), cols(cols), id(id) {}
+
+    void run() override {
+        int localH[10] = {0};
+
+        for (int j = 0; j < cols; j++) {
+            int val = row[j] % 10;
+            localH[val]++;
+
+            // nakon svakih 10 elemenata dajemo šansu scheduleru
+            if ((j + 1) % 10 == 0) Thread::sleep(5);
+        }
+
+        // saberi u globalni histogram
+        histLock->wait();
+        for (int k = 0; k < 10; k++) H[k] += localH[k];
+        histLock->signal();
+        doneSem->signal();
+    }
+};
+
+//// Pseudorandom generator
+static unsigned long int next = 1;
+
+int custom_rand(void) {
+    next = next * 1103515245 + 12345;
+    return (unsigned int)(next / 65536) % 32768;
+}
+
+void custom_srand(unsigned int seed) { next = seed; }
+
+// Funkcija testa
+void printingID() {
+    printString("TEST 8: Histogram sa M nitima\n");
+    printString("Unesite M i N: ");
+
+    // Učitaj M i N (jednocifrene vrednosti radi jednostavnosti unosa)
+    char c = getc();
+    M = c - '0';
+    getc(); // enter
+    c = getc();
+    N = c - '0';
+    getc(); // enter
+
+    if (M <= 0 || N <= 0) {
+        printString("Dimenzije moraju biti > 0\n");
+        M = 5;
+        N = 5;
+    }
+
+    // Alokacija matrice
+    mat = (int**)mem_alloc(M * sizeof(int*));
+    for (int i = 0; i < M; i++) {
+        mat[i] = (int*)mem_alloc(N * sizeof(int));
+    }
+    H = (int*)mem_alloc(10 * sizeof(int));
+
+    // Popuni pseudoslučajnim vrednostima
+    custom_srand(12345);
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            mat[i][j] = custom_rand();
+        }
+    }
+
+    // Inicijalizuj histogram i semafore
+    //H = new int[10];
+    for (int k = 0; k < 10; k++) H[k] = 0;
+    histLock = new Semaphore(1);
+    doneSem  = new Semaphore(0);
+
+    // Kreiraj radnike
+    Worker* threads[32]; // neka gornja granica za M
+    for (int i = 0; i < M; i++) {
+        threads[i] = new Worker(mat[i], N, i + 1);
+        threads[i]->start();
+    }
+
+    // Čekaj da završe
+    for (int i = 0; i < M; i++) doneSem->wait();
+
+    // Ispiši konačni histogram
+    printString("Finalni histogram:\n");
+    for (int k = 0; k < 10; k++) {
+        for (int k = 0; k < 10000; k++) {
+            for (int l = 0; l < 50000; l++); // ovim se realizuje cekanje pri ispisu od oko sekund
+        }
+        printString("H[");
+        printInt(k);
+        printString("] = ");
+        printInt(H[k]);
+        printString("\n");
+    }
+
+    // Oslobodi resurse
+    for (int i = 0; i < M; i++)
+        delete[] mat[i];
+    delete[] mat;
+    delete[] H;
+    delete histLock;
+    delete doneSem;
+
+    printString("Kraj testa 8.\n");
+}
+#endif
+
+----------------------------------------------------------------------------------------
+
+#include "../h/syscall_cpp.hpp"
+#include "printing.hpp"
+
+int M, N;
+int** mat;
+int suma;
+Semaphore *doneSem;
+Semaphore* turnSem[20];
+Semaphore* workingWait;
+
+class Worker : public Thread {
+private:
+    int* row;
+    int col;
+    int sem;
+
+public:
+
+    Worker(int *row, int col, int sem) : Thread(), row(row), col(col), sem(sem) {}
+
+    void run() override {
+
+        turnSem[sem]->wait();
+
+        int localSum = 0;
+
+        for (int i = 0; i < col; i++) {
+            localSum += row[i];
+
+            if ((i + 1) % 3 == 0) Thread::sleep(5);
+        }
+
+        workingWait->wait();
+        suma += localSum;
+        workingWait->signal();
+
+        if (sem + 1 < M) turnSem[sem + 1]->signal();
+
+        doneSem->signal();
+    }
+
+};
+
+static unsigned long int next = 1;
+
+int custom_rand(void) {
+    next = next * 1103515245 + 12345;
+    return (unsigned int)(next / 65536) % 32768;
+}
+
+void custom_srand(unsigned int seed) { next = seed; }
+
+void printingID() {
+    printString("TEST 8: Ispis ID-a\n");
+
+    printString("Unesite M i N: ");
+
+    char c = getc();
+    M = c - '0';
+    getc();
+    c = getc();
+    N = c - '0';
+    getc();
+
+    if (M <= 0 || N <= 0) {
+        M = 5;
+        N = 5;
+    }
+
+    mat = (int**) mem_alloc(sizeof(int*) * M);
+    for (int i = 0; i < M; i++) {
+        mat[i] = (int*) mem_alloc(sizeof(int) * N);
+    }
+
+    custom_srand(12345);
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            mat[i][j] = custom_rand();
+        }
+    }
+
+    printString("\nMatrica:\n");
+    for (int i = 0; i < M; i++) {
+        for (int k = 0; k < 10000; k++) {
+            for (int l = 0; l < 50000; l++);
+        }
+        for (int j = 0; j < N; j++) {
+            printInt(mat[i][j]);
+            printString(" ");
+        }
+        if (i < M - 1) printString("\n");
+    }
+
+    workingWait = new Semaphore(1);
+    doneSem = new Semaphore(0);
+    turnSem[0] = new Semaphore(1);
+    for (int i = 1; i < M; i++) {
+        turnSem[i] = new Semaphore(0);
+    }
+
+    Worker* workers[20];
+    for (int i = 0; i < M; i++) {
+        workers[i] = new Worker(mat[i], N, i);
+        workers[i]->start();
+    }
+
+    for (int i = 0; i < M; i++) doneSem->wait();
+
+    printString("\nUkupna suma = ");
+    printInt(suma);
+    printString("\n");
+
+    for (int i = 0; i < M; i++) {
+        delete[] mat[i];
+        delete workers[i];
+        delete turnSem[i];
+    }
+    delete[] mat;
+    delete workingWait;
+    delete doneSem;
+
+    printString("Kraj testa 8.\n");
+}
+
+----------------------------------------------------------------------------------------
+
+#include "../h/syscall_cpp.hpp"
+#include "printing.hpp"
+
+Semaphore *doneSem;
+Semaphore* workingWait;
+
+class WorkerAA: public Thread {
+private:
+
+public:
+    WorkerAA() : Thread() {}
+
+    void run() override {
+
+        for (int i = 0; i < 5; i++) {
+            for (int j = 0; j < 10000; j++)
+                for (int k = 0; k < 30000; k++);
+            workingWait->wait();
+            printString("Hello! MyId = ");
+            printInt(this->getID());
+            printString(", najveci slobodan blok: ");
+            printInt(mem_get_largest_free_block());
+            printString("\n");
+            workingWait->signal();
+
+        }
+
+        Thread::sleep(20);
+
+        doneSem->signal();
+    }
+
+};
+
+class WorkerBB: public Thread {
+private:
+
+public:
+    WorkerBB() : Thread() {}
+
+    void run() override {
+
+        for (int i = 0; i < 5; i++) {
+            for (int j = 0; j < 10000; j++)
+                for (int k = 0; k < 30000; k++);
+            workingWait->wait();
+            printString("Hello! MyId = ");
+            printInt(this->getID());
+            printString(", trenutno slobodno: ");
+            printInt(mem_get_free_space());
+            printString("\n");
+            workingWait->signal();
+
+        }
+
+        Thread::sleep(20);
+
+        doneSem->signal();
+    }
+
+};
+
+class WorkerCC: public Thread {
+private:
+
+public:
+    WorkerCC() : Thread() {}
+
+    void run() override {
+
+        for (int i = 0; i < 5; i++) {
+            for (int j = 0; j < 10000; j++)
+                for (int k = 0; k < 30000; k++);
+            workingWait->wait();
+            printString("Hello! MyId = ");
+            printInt(this->getID());
+            printString("\n");
+            workingWait->signal();
+
+        }
+
+        Thread::sleep(20);
+
+        doneSem->signal();
+    }
+
+};
+
+void printingID() {
+    printString("TEST 8: Ispis ID-a\n");
+
+    workingWait = new Semaphore(1);
+    doneSem = new Semaphore(0);
+
+    int num = 3;
+
+    Thread* workers[num];
+    workers[0] = new WorkerAA();
+    workers[1] = new WorkerBB();
+    workers[2] = new WorkerCC();
+    for (int i = 0; i < num; i++) {
+        workers[i]->start();
+    }
+
+    for (int i = 0; i < num; i++) doneSem->wait();
+
+    for (int i = 0; i < num; i++) {
+        delete workers[i];
+    }
+    delete workingWait;
+    delete doneSem;
+
+    printString("Kraj testa 8.\n");
+}
+
+----------------------------------------------------------------------------------------
+
+Semaphore *doneSem;
+Semaphore* printWait;
+// čekanje da sve niti završe
+
+// Radna nit za jednu vrstu
+class Worker : public Thread {
+private:
+    const char ime;
+
+public:
+    Worker(char ime) : Thread(), ime(ime) {}
+
+    void run() override {
+        for (int k = 0; k < 10; k++) {
+            for (int k = 0; k < 10000; k++) {
+                for (int l = 0; l < 30000; l++); // ovim se realizuje cekanje pri ispisu od oko sekund
+            }
+            printWait->wait();
+            printString("Thread ");
+            printString(&ime);
+            printString(" ID = ");
+            printInt(getID());
+            printString(", ispis broj: ");
+            printInt(k + 1);
+            printString("\n");
+            printWait->signal();
+        }
+
+        doneSem->signal();
+    }
+};
+
+void printingID() {
+    printString("TEST 8: Ispis ID-a\n");
+
+    doneSem  = new Semaphore(0);
+    printWait = new Semaphore(1);
+
+    // Kreiraj radnike
+    Worker* threads[3];
+    for (int i = 0; i < 3; i++) {
+        threads[i] = new Worker((char)('A' + i));
+        threads[i]->start();
+    }
+
+    // Čekaj da završe
+    for (int i = 0; i < 3; i++) doneSem->wait();
+
+    // Oslobodi resurse
+    delete doneSem;
+    delete printWait;
+
+    printString("Kraj testa 8.\n");
+}
+
+----------------------------------------------------------------------------------------
+
+#include "../h/syscall_cpp.hpp"
+#include "printing.hpp"
+
+Semaphore *doneSem;
+Semaphore* workingWait;
+Semaphore* limit;
+
+class WorkerM : public Thread {
+private:
+
+public:
+
+    WorkerM() : Thread() {}
+
+    void run() override {
+
+        limit->wait();
+        for (int i = 0; i < 5; i++) {
+
+            workingWait->wait();
+            printString("Hello! MyId = ");
+            printInt(this->getID());
+            printString("\n");
+            workingWait->signal();
+
+        }
+
+        Thread::sleep(20);
+
+        limit->signal();
+        doneSem->signal();
+    }
+
+};
+
+void printingID() {
+    printString("TEST 8: Ispis ID-a\n");
+
+    int maxNum, num;
+
+    printString("Unesite max broj niti: ");
+
+    char c = getc();
+    maxNum = c - '0';
+    getc();
+
+    Thread::setMaximumThreads(maxNum);
+
+    printString("\nUnesite zeljeni broj niti: ");
+
+    num = getc();
+    num = num - '0';
+    getc();
+
+    workingWait = new Semaphore(1);
+    doneSem = new Semaphore(0);
+    limit = new Semaphore(Thread::num);
+
+    printInt(num);
+
+    WorkerM* workers[num];
+    for (int i = 0; i < num; i++) {
+        workers[i] = new WorkerM();
+        workers[i]->start();
+    }
+
+    for (int i = 0; i < num; i++) doneSem->wait();
+
+    for (int i = 0; i < num; i++) {
+        delete workers[i];
+    }
+    delete limit;
+    delete workingWait;
+    delete doneSem;
+
+    printString("Kraj testa 8.\n");
+}
+
+--------------za 30 mod---------------------------------------------------
+
+#include "../h/syscall_cpp.hpp"
+#include "printing.hpp"
+
+Semaphore *doneSem;
+Semaphore* workingWait;
+Semaphore* limit;
+int maxNum, num;
+
+class WorkerM : public Thread {
+private:
+
+public:
+
+    WorkerM() : Thread() {}
+
+    void run() override {
+
+        limit->wait();
+
+        workingWait->wait();
+        printString("Hello! MyId = ");
+        printInt(this->getID());
+        printString("\n");
+        workingWait->signal();
+        Thread::sleep(10);
+
+        doneSem->signal();
+    }
+
+};
+
+class WorkerT : public Thread {
+private:
+
+public:
+    WorkerT() : Thread() {}
+
+    void run() override {
+
+        Thread::sleep(20);
+        printString("\nWaiting done\n");
+
+        for (int i = 0; i < num - maxNum; i++) {
+            Thread::sleep(10);
+            limit->signal();
+            printString("Interval time elapsed\n");
+        }
+
+        doneSem->signal();
+    }
+
+};
+
+void printingID() {
+    printString("TEST 8: Ispis ID-a\n");
+
+    printString("Unesite max broj niti: ");
+
+    char c = getc();
+    maxNum = c - '0';
+    getc();
+
+    printString("\nUnesite zeljeni broj niti: ");
+
+    num = getc();
+    num = num - '0';
+    getc();
+
+    workingWait = new Semaphore(1);
+    doneSem = new Semaphore(0);
+    limit = new Semaphore(maxNum);
+
+    printInt(num);
+
+    WorkerM* workers[num];
+    WorkerT* timer = new WorkerT();
+    timer->start();
+    for (int i = 0; i < num; i++) {
+        workers[i] = new WorkerM();
+        workers[i]->start();
+    }
+
+    for (int i = 0; i < num+1; i++) doneSem->wait();
+
+    for (int i = 0; i < num; i++) {
+        delete workers[i];
+    }
+    delete limit;
+    delete workingWait;
+    delete doneSem;
+
+    printString("Kraj testa 8.\n");
+}
+
+----------------------------------------------------------------------------------------
+
+Semaphore* printWait;
+Thread* threads[3];
+
+// Radna nit za jednu vrstu
+class WorkerAA : public Thread {
+
+public:
+    WorkerAA() : Thread() {}
+
+    void run() override {
+        for (int k = 0; k < 3; k++) {
+
+            printWait->wait();
+            printString("Thread A");
+            printString(", ispis broj: ");
+            printInt(k + 1);
+            printString("\n");
+            printWait->signal();
+
+            for (int j = 0; j < 10000; j++) {
+                for (int l = 0; l < 3000; l++); // ovim se realizuje cekanje pri ispisu od oko sekund
+
+                thread_dispatch();
+            }
+        }
+
+        printString("A finished!\n");
+        //doneSem->signal();
+    }
+};
+
+class WorkerBB : public Thread {
+
+public:
+    WorkerBB() : Thread() {}
+
+    void run() override {
+        for (int k = 0; k < 6; k++) {
+
+            printWait->wait();
+            printString("Thread B");
+            printString(", ispis broj: ");
+            printInt(k + 1);
+            printString("\n");
+            printWait->signal();
+
+            for (int j = 0; j < 10000; j++) {
+                for (int l = 0; l < 3000; l++); // ovim se realizuje cekanje pri ispisu od oko sekund
+
+                thread_dispatch();
+            }
+        }
+
+        printString("B finished!\n");
+        //doneSem->signal();
+    }
+};
+
+
+void printingID() {
+    printString("TEST 8: Ispis ID-a\n");
+
+    doneSem  = new Semaphore(0);
+    printWait = new Semaphore(1);
+
+    // Kreiraj radnike
+    //Thread* threads[3];
+
+    threads[0] = new Thread(nullptr, nullptr);
+    printString("First created\n");
+    threads[1] = new WorkerAA();
+    printString("A created\n");
+    threads[2] = new WorkerBB();
+    printString("B created\n");
+
+    for (int i = 1; i < 3; i++) {
+        threads[i]->start();
+    }
+
+    threads[1]->join();
+    threads[2]->join();
+
+    // Oslobodi resurse
+    delete doneSem;
+    delete printWait;
+
+    printString("First finished\n");
+
+    printString("Kraj testa 8.\n");
+}
